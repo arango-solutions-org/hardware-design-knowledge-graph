@@ -998,11 +998,93 @@ class ArangoSource:
         return {"results": (mods + golden)[:40]}
 
 
+class PlatformArangoSource(ArangoSource):
+    """ArangoSource that reads as the request's signed-in platform user.
+
+    No password is stored: each request's handle uses that user's JWT
+    (``ic_viz/platform_auth.py``). ArangoSource caches some metadata in the
+    process, so before serving anything each login is checked against the
+    database once (remembered for ``_ACCESS_TTL_S``): a user without access
+    must not be served what another user's request cached. The API calls
+    :meth:`require_access` before every data route, since some routes answer
+    from that cache without touching ``db``.
+    """
+
+    _ACCESS_TTL_S = 300.0
+
+    def __init__(self, database: str):
+        super().__init__(db=None)
+        self.database = database
+        self._access: dict = {}
+
+    @property
+    def db(self):
+        import hashlib
+        import time
+
+        from .platform import PlatformAccessDenied, PlatformLoginRequired, current_login
+        from .platform_auth import PlatformTokenError, open_platform_database
+
+        token = current_login()
+        if token is None:
+            raise PlatformLoginRequired("This request did not carry your platform login. Sign in to the platform and reload.")
+        try:
+            handle = open_platform_database(self.database, token)
+        except PlatformTokenError as exc:
+            raise PlatformLoginRequired(f"{exc}. Sign in to the platform again.") from exc
+        key = hashlib.sha256(token.encode()).hexdigest()
+        checked = self._access.get(key)
+        if checked is None or time.time() - checked > self._ACCESS_TTL_S:
+            from arango.exceptions import JWTRefreshError
+
+            try:
+                handle.properties()
+            except JWTRefreshError as exc:
+                # python-arango answers a 401 on a user token by trying to
+                # refresh it, which a platform login cannot do.
+                raise PlatformLoginRequired("The database refused your platform login. Sign in again.") from exc
+            except Exception as exc:  # noqa: BLE001 — any refusal means no access
+                code = getattr(exc, "http_code", None)
+                if code == 401:
+                    raise PlatformLoginRequired("The database refused your platform login. Sign in again.") from exc
+                raise PlatformAccessDenied(
+                    f"Your account cannot read the {self.database!r} database (HTTP {code}). Ask for read access."
+                ) from exc
+            if len(self._access) > 1000:  # tokens rotate; do not grow without bound
+                self._access.clear()
+            self._access[key] = time.time()
+        return handle
+
+    @db.setter
+    def db(self, value):
+        # ArangoSource.__init__ assigns self.db; the handle is per request here.
+        pass
+
+    def require_access(self) -> None:
+        """Raise PlatformLoginRequired / PlatformAccessDenied unless the
+        request's user can read the database."""
+        self.db  # noqa: B018 — the property performs the check
+
+
 # ==========================================================================
 # Factory
 # ==========================================================================
 def get_source(snapshot_path=None):
-    """Return ArangoSource if live creds work, else SnapshotSource."""
+    """Return the data source.
+
+    On the Arango platform (endpoint injected): a PlatformArangoSource reading
+    as each request's signed-in user; never the snapshot, which would hide a
+    login problem behind stale data. Otherwise ArangoSource if live creds
+    work, else SnapshotSource.
+    """
+    from .platform import on_platform
+
+    if on_platform():
+        database = os.getenv("ARANGO_DATABASE", "").strip()
+        if not database:
+            raise RuntimeError("ARANGO_DATABASE is not set; the bundle's .env names the database to read")
+        print(f"[datasource] using PlatformArangoSource ({database}, as the signed-in user)")
+        return PlatformArangoSource(database)
     mode = os.getenv("CHRONO_SOURCE", "auto")
     if mode in ("auto", "arango"):
         src = _try_arango()

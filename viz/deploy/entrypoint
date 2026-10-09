@@ -1,0 +1,145 @@
+entrypoint = __file__
+# ^ Line 1 MUST start with the literal token `entrypoint`: the Arango Container
+# Manager runs `python /project/<first word of this file>`. No shebang, no
+# docstring, no import above this line (see viz/DEPLOY.md).
+#
+# Boot sequence for the ChronoGraph BYOC bundle (layout mirrors the repo: the
+# app lives in ./viz, the sanitized .env sits at the bundle root, which is where
+# ic_viz/datasource.py already looks for it):
+#   1. install requirements.txt into this interpreter (uv if present, else pip —
+#      py12base on the pilot cluster ships no uv)
+#   2. load the baked .env; refuse a loopback ARANGO_ENDPOINT (no ArangoDB in this pod).
+#      With platform login (the default bundle) no password is needed; a bundle
+#      built with --with-credentials must carry one.
+#   3. exec uvicorn on ic_viz.api:asgi_app, port $PORT or 8000
+# Ported from project-sentinel's scripts/platform/entrypoint (verified live on
+# prod.demo.pilot.arango.ai).
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+APP_DIR = ROOT / "viz"
+REQUIREMENTS = ROOT / "requirements.txt"
+
+
+def _log(msg: str) -> None:
+    print(f"==> {msg}", flush=True)
+
+
+def _find_uv() -> str | None:
+    env_uv = os.environ.get("UV_BINARY", "").strip()
+    if env_uv and os.access(env_uv, os.X_OK):
+        return env_uv
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in ("/usr/local/bin/uv", "/usr/bin/uv",
+                      str(Path.home() / ".local" / "bin" / "uv")):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _install_dependencies() -> None:
+    """Install requirements.txt into *this* interpreter.
+
+    Platform venvs may lack the ``pip`` module; ``uv`` installs without it. On
+    py12base (no uv) we bootstrap pip via ensurepip. CHRONO_SKIP_INSTALL=1 skips
+    the step (local rehearsal, or images with pre-baked dependencies).
+    """
+    if os.environ.get("CHRONO_SKIP_INSTALL", "").lower() in ("1", "true", "yes"):
+        _log("CHRONO_SKIP_INSTALL set — using pre-installed dependencies")
+        return
+    if not REQUIREMENTS.is_file():
+        sys.exit(f"ERROR: {REQUIREMENTS} missing from the bundle")
+    uv = _find_uv()
+    if uv:
+        _log(f"installing requirements with uv ({uv})")
+        subprocess.run([uv, "pip", "install", "--python", sys.executable,
+                        "-r", str(REQUIREMENTS)], cwd=ROOT, check=True)
+        return
+    _log("uv not found — bootstrapping pip via ensurepip")
+    subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                   cwd=ROOT, check=True)
+    _log("pip install -r requirements.txt")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                    "--upgrade-strategy", "only-if-needed", "-r", str(REQUIREMENTS)],
+                   cwd=ROOT, check=True)
+
+
+def _load_dotenv_into_environ() -> None:
+    """Minimal .env loader (python-dotenv may not be installed yet when the
+    guard below runs). Existing environment variables win."""
+    env_file = ROOT / ".env"
+    if not env_file.is_file():
+        _log("no .env in bundle — relying on platform-provided environment")
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _fail_if_loopback(endpoint: str) -> None:
+    if os.environ.get("CHRONO_ALLOW_LOOPBACK_ARANGO", "").lower() in ("1", "true", "yes"):
+        return
+    if "localhost" in endpoint.lower() or "127.0.0.1" in endpoint:
+        sys.exit("ERROR: ARANGO_ENDPOINT points at loopback — unreachable from the "
+                 "platform pod. Bake the cluster endpoint into .env "
+                 "(viz/deploy/package.sh) or set CHRONO_ALLOW_LOOPBACK_ARANGO=1.")
+
+
+def _platform_login(env) -> bool:
+    """Whether requests read the database as the signed-in platform user, on
+    the injected endpoint (ic_viz/platform_auth.py), so no password is needed."""
+    return bool(env.get("ARANGO_DEPLOYMENT_ENDPOINT")) and (
+        env.get("CHRONO_PLATFORM_AUTH", "auto").strip().lower() not in ("off", "0", "false", "no"))
+
+
+def _login_problem(env) -> str | None:
+    """Why the service could not reach the database as anyone, or ``None``."""
+    if _platform_login(env):
+        return None
+    if not env.get("ARANGO_ENDPOINT") or not env.get("ARANGO_PASSWORD"):
+        return ("no platform login (ARANGO_DEPLOYMENT_ENDPOINT not injected, or "
+                "CHRONO_PLATFORM_AUTH=off) and ARANGO_ENDPOINT / ARANGO_PASSWORD not set — "
+                "rebuild with viz/deploy/package.sh --with-credentials")
+    return None
+
+
+def main() -> None:
+    os.chdir(ROOT)
+    _log(f"ChronoGraph BYOC entrypoint in {ROOT} (python {sys.version.split()[0]})")
+    _install_dependencies()
+    _load_dotenv_into_environ()
+    endpoint = os.environ.get("ARANGO_ENDPOINT", "")
+    problem = _login_problem(os.environ)
+    if problem:
+        sys.exit(f"ERROR: {problem}")
+    if _platform_login(os.environ):
+        _log("login: the signed-in platform user (injected ARANGO_DEPLOYMENT_ENDPOINT)")
+        user = "(each signed-in user)"
+    else:
+        user = os.environ.get("ARANGO_USERNAME", "?")
+    if endpoint:
+        _fail_if_loopback(endpoint)
+    prefix = os.environ.get("SERVICE_URL_PATH_PREFIX", "")
+    port = os.environ.get("PORT") or os.environ.get("BACKEND_PORT") or "8000"
+    _log(f"ArangoDB endpoint: {endpoint}  db: {os.environ.get('ARANGO_DATABASE', '?')}  "
+         f"user: {user}  source: {os.environ.get('CHRONO_SOURCE', 'auto')}")
+    _log(f"mount prefix: {prefix or '(none)'}  listening on 0.0.0.0:{port}")
+    os.environ["PYTHONPATH"] = str(APP_DIR) + (os.pathsep + os.environ["PYTHONPATH"]
+                                               if os.environ.get("PYTHONPATH") else "")
+    os.chdir(APP_DIR)
+    argv = [sys.executable, "-m", "uvicorn", "ic_viz.api:asgi_app",
+            "--host", "0.0.0.0", "--port", str(port), "--log-level", "info"]
+    os.execvp(sys.executable, argv)
+
+
+if __name__ == "__main__":
+    main()

@@ -38,7 +38,11 @@ jobs:
             pytest \
             pytest-cov \
             pytest-mock \
+            pyyaml \
+            httpx \
             arango-entity-resolution==3.1.0
+          # ChronoGraph (viz/) tests: FastAPI app, platform login, BYOC bundle
+          pip install -r viz/requirements.txt
 
       - name: Copy environment template
         run: cp env.template .env
