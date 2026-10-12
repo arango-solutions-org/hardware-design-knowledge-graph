@@ -27,7 +27,7 @@ def main():
         from ic_viz.build_snapshot import build
         build()
     print(f"[server] ChronoGraph on http://{host}:{port}")
-    uvicorn.run("ic_viz.api:app", host=host, port=port, reload=False)
+    uvicorn.run("ic_viz.api:asgi_app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

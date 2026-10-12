@@ -38,6 +38,9 @@ python -m ic_viz.build_snapshot
 python server.py            # → http://127.0.0.1:8700
 ```
 
+To host it on the Arango platform cluster (prod.demo) instead, see
+**[DEPLOY.md](DEPLOY.md)**: `deploy/package.sh` + `deploy/byoc_deploy.py update`.
+
 ## Data source: offline snapshot ↔ live DB
 
 ChronoGraph runs against either source through one identical query contract:
@@ -66,9 +69,12 @@ The active source is shown as a badge (top-right): `SNAPSHOT` or `LIVE`.
 
 ```
 viz/
-  server.py               uvicorn entrypoint
+  server.py               uvicorn entrypoint (serves ic_viz.api:asgi_app)
+  DEPLOY.md               Arango platform (BYOC) deployment runbook
+  deploy/                 entrypoint, package.sh, byoc_deploy.py (platform release)
   ic_viz/
-    api.py                FastAPI routes + static SPA mount
+    api.py                FastAPI routes + static SPA mount + /healthz
+    prefix.py             strips the platform mount prefix (no-op locally)
     datasource.py         DataSource contract: SnapshotSource + ArangoSource
     build_snapshot.py     data/ exports → snapshot.json (+ derived layers)
   web/
@@ -93,6 +99,10 @@ viz/
 | `GET /api/provenance?id=` | text + Verilog + structure + relations + lineage |
 | `GET /api/source?kind=&ref=&terms=` | full chunk/Verilog text + highlight spans |
 | `GET /api/search?q=&repos=` | module lookup |
+| `GET /healthz` | `{ok, version, source}` — release proof for the platform deploy verifier |
+
+All front-end URLs are **relative** (`./static/...`, `api/...`) so the same
+files work at `/` locally and under the platform mount prefix.
 
 ## Live DB (`ArangoSource`) — fully wired
 

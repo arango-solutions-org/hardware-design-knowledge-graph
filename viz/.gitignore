@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 .prd-drift-queue/
+
+# BYOC bundle — carries baked DB credentials (viz/deploy/package.sh); never commit
+*.tar.gz

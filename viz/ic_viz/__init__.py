@@ -5,4 +5,4 @@ Two data sources expose an identical JSON contract:
   * ArangoSource   — reads the live temporal graph over AQL (used when creds are available).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"

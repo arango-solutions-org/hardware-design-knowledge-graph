@@ -164,7 +164,7 @@ class TestSemanticBridgeLocal:
             load_golden_entities, load_rtl_nodes, match_exact,
         )
         goldens = load_golden_entities(db, "OR1200_")
-        ports, signals = load_rtl_nodes(db, "OR1200_")
+        ports, signals = load_rtl_nodes(db, "OR1200")  # the repo name, not the prefix
         rtl_nodes = ports + signals
         matches = match_exact(rtl_nodes, goldens)
 

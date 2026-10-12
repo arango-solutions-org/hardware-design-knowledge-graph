@@ -45,7 +45,8 @@
   // ── data refresh ──
   async function refresh(relayout = false) {
     if (!State.activeRepos.length) { return; }
-    const key = `${State.ts}|${State.activeRepos.join(',')}|${State.projection}`;
+    // whole seconds, matching what API.slice sends — play advances by fractions
+    const key = `${Math.floor(State.ts)}|${State.activeRepos.join(',')}|${State.projection}`;
     if (key === State.lastSliceKey && !relayout) return;
     State.lastSliceKey = key;
     const seq = ++refreshSeq;

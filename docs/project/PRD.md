@@ -183,6 +183,27 @@ Each commit is assigned to a named epoch by `etl_epoch_detector.py` using four r
 | Test suite | Comprehensive unit tests | ✅ 213 tests, CI on Python 3.10 and 3.11 |
 | Merged to main | `feature/temporal-kg` merged | ✅ |
 
+### ChronoGraph on the Arango Platform
+
+ChronoGraph (`viz/`, the temporal/provenance visualizer) can be hosted on an
+Arango platform cluster as a user-defined service (`viz/DEPLOY.md`). There:
+
+1. **Each person reads as themselves.** The service reads the temporal graph
+   with the signed-in platform user's login, forwarded by the gateway, on the
+   injected cluster endpoint with TLS verified against the injected CA. The
+   default bundle carries no database account or password.
+2. **Access follows database permissions.** A user without `ro`/`rw` on the
+   database gets `403` naming the database; a missing, expired or rejected
+   login gets `401`. Nothing cached from another user's request is served to
+   a user without access; access is rechecked at least every five minutes.
+3. **Diagnosable without secrets.** `GET /api/platform/diagnostics` reports
+   what the platform provides (endpoint, CA, TLS result, forwarded login,
+   sidecar identity) and never a token or claim value.
+4. **Fallback for clusters without platform login.** `package.sh
+   --with-credentials` bakes a dedicated, database-scoped service account
+   (never `root` or a `_system` administrator unless deliberately allowed) and
+   turns platform login off.
+
 ### Next Steps
 
 1. **GraphRAG on doc directories** — run `src/local_graphrag/` on OR1200/mor1kx/ibex docs to populate `{PREFIX}Entities`, `{PREFIX}Communities`, and expand `CROSS_REPO_EVOLVED_FROM` lineage edges
